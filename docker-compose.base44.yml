@@ -1,9 +1,11 @@
 # Base44 sandbox/dev stack for CUI_Communicate.
 # Everything runs from the cloned source with live reload (no application image is built or pulled):
-#   web  = React + Vite dev server on http://localhost:3000  (host port 3000)
-#   api  = Express + Socket.IO API on http://localhost:8000  (CLIENT_URL must match the web origin)
-#   mongo= local MongoDB with a persistent named volume
-# The API applies migrations and creates the demo data itself on the first start against an empty database.
+#   web           = React + Vite dev server                    -> host port 3000
+#   api           = Express + Socket.IO + SSO/OIDC provider    -> host port 8000
+#   mongo         = local MongoDB with a persistent named volume
+#   campus-portal = sample SSO client application              -> host port 9101
+#   library-desk  = sample SSO client application              -> host port 9102
+# The API applies migrations and creates the demo data (messaging + SSO) itself on start.
 name: cui-communicate
 
 services:
@@ -36,6 +38,13 @@ services:
       - MONGO_URI=mongodb://mongo:27017/cui_communicate
       # Browser origin of the preview UI: Express CORS and Socket.IO only accept this origin.
       - CLIENT_URL=https://3000-${BASE44_PUBLIC_HOST_SUFFIX}
+      # Public base URL of the SSO provider (issuer) and of the two sample client applications.
+      - SSO_ISSUER=https://8000-${BASE44_PUBLIC_HOST_SUFFIX}
+      - DEMO_PORTAL_URL=https://9101-${BASE44_PUBLIC_HOST_SUFFIX}
+      - DEMO_LIBRARY_URL=https://9102-${BASE44_PUBLIC_HOST_SUFFIX}
+      # Development-only credentials shared with the sample clients below (not used in production).
+      - PORTAL_CLIENT_SECRET=campus-portal-demo-secret
+      - LIBRARY_CLIENT_SECRET=library-desk-demo-secret
     # JWT_SECRET (required at boot, 32+ chars) arrives from the platform-managed secrets file.
     env_file:
       - /run/base44/app.env
@@ -46,11 +55,11 @@ services:
       - -ec
       - |
         npm ci --no-audit --no-fund
-        # Migrations + demo data run once, while the database is still empty. The seed itself is idempotent,
-        # but it resets the demo accounts, so a restart must not repeat it.
-        # Re-seed by hand with: docker compose -f docker-compose.base44.yml exec api npm run seed
+        # SSO demo data is idempotent and also refreshes the sample applications' redirect URIs, which depend
+        # on the preview host, so it runs on every start. The messaging seed runs once, against an empty database.
+        npm run seed:sso
         if node --input-type=module -e "import mongoose from 'mongoose'; await mongoose.connect(process.env.MONGO_URI); const empty=(await mongoose.connection.db.collection('users').estimatedDocumentCount())===0; await mongoose.disconnect(); process.exit(empty?1:0)"; then
-          echo 'Demo data already present; skipping seed.'
+          echo 'Messaging demo data already present; skipping seed.'
         else
           npm run seed
         fi
@@ -60,11 +69,12 @@ services:
       interval: 15s
       timeout: 5s
       retries: 8
-      start_period: 120s
+      start_period: 180s
     labels:
       base44.project: "CUI_Communicate API"
       base44.kind: "api"
       base44.port: "8000"
+      base44.docs: "/docs"
 
   web:
     image: node:22
@@ -94,6 +104,72 @@ services:
       base44.project: "CUI_Communicate Web"
       base44.kind: "web"
       base44.port: "3000"
+
+  # Sample SSO client application 1 (no npm dependencies — plain Node).
+  campus-portal:
+    image: node:22
+    restart: on-failure
+    working_dir: /app/demo-clients/campus-portal
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - ./demo-clients:/app/demo-clients
+    environment:
+      - PORT=9101
+      - APP_NAME=Campus Portal
+      - PUBLIC_URL=https://9101-${BASE44_PUBLIC_HOST_SUFFIX}
+      - SSO_ISSUER=https://8000-${BASE44_PUBLIC_HOST_SUFFIX}
+      - SSO_CLIENT_ID=campus-portal
+      - SSO_CLIENT_SECRET=campus-portal-demo-secret
+      - PEER_APP_URL=https://9102-${BASE44_PUBLIC_HOST_SUFFIX}
+      - PEER_APP_NAME=Library Desk
+    ports:
+      - "9101:9101"
+    command: ["node", "server.js"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9101/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    labels:
+      base44.project: "Campus Portal (SSO client)"
+      base44.kind: "web"
+      base44.port: "9101"
+
+  # Sample SSO client application 2.
+  library-desk:
+    image: node:22
+    restart: on-failure
+    working_dir: /app/demo-clients/library-desk
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - ./demo-clients:/app/demo-clients
+    environment:
+      - PORT=9102
+      - APP_NAME=Library Desk
+      - PUBLIC_URL=https://9102-${BASE44_PUBLIC_HOST_SUFFIX}
+      - SSO_ISSUER=https://8000-${BASE44_PUBLIC_HOST_SUFFIX}
+      - SSO_CLIENT_ID=library-desk
+      - SSO_CLIENT_SECRET=library-desk-demo-secret
+      - PEER_APP_URL=https://9101-${BASE44_PUBLIC_HOST_SUFFIX}
+      - PEER_APP_NAME=Campus Portal
+    ports:
+      - "9102:9102"
+    command: ["node", "server.js"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9102/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    labels:
+      base44.project: "Library Desk (SSO client)"
+      base44.kind: "web"
+      base44.port: "9102"
 
 volumes:
   mongo-data:

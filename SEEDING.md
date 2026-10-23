@@ -30,6 +30,31 @@ Demo password for every account: `Demo@12345` (override with `DEMO_PASSWORD` in 
 | `Project_Team` | informal, private | Student_1 (owner), Student_2 | any member |
 | `Study_Group` | informal, open | Student_2 (owner) | owner |
 
+## SSO platform demo data
+
+`npm run seed:sso` (also run automatically when the API container starts) creates the SSO provider's demo data in the
+`sso_*` collections. It is idempotent: accounts are created only when missing (their passwords are never reset) and the
+two sample client applications have their redirect URIs refreshed from `DEMO_PORTAL_URL` / `DEMO_LIBRARY_URL`.
+
+| Account | Password | Role |
+|---|---|---|
+| `sso_admin@comsats.edu.pk` | `Demo@12345` | Platform administrator (every tenant) |
+| `tenant_admin@comsats.edu.pk` | `Demo@12345` | Tenant administrator for COMSATS |
+| `student@comsats.edu.pk` | `Demo@12345` | Member of COMSATS |
+
+| Tenant | Identifier | Purpose |
+|---|---|---|
+| COMSATS University Islamabad | `comsats` | Owns the sample clients and the demo users |
+| North Campus Institute | `north-campus` | Second tenant used to demonstrate isolation |
+
+| Sample client application | Client ID | URL (sandbox) |
+|---|---|---|
+| Campus Portal | `campus-portal` | `https://9101-$BASE44_PUBLIC_HOST_SUFFIX` |
+| Library Desk | `library-desk` | `https://9102-$BASE44_PUBLIC_HOST_SUFFIX` |
+
+An administrator can also register further applications at `/admin/tenant`: the client secret is shown once at
+registration and stored hashed.
+
 ## Idempotency
 
 Running the seed repeatedly creates no duplicate users, groups or members. It **adds only missing members**, never

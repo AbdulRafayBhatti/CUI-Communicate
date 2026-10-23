@@ -12,6 +12,7 @@ import { User, Conversation, AuditLog } from './models/index.js';
 import { canDirectWithoutRequest, relationshipSnapshot, relationshipSnapshotMatches, audit } from './services/policy.js';
 import { setRealtimeServer } from './services/realtime.js';
 import { recoverPendingBroadcasts } from './services/broadcast.js';
+import ssoRouter, { initSso } from './sso/index.js';
 import { pathToFileURL } from 'url';
 
 const app=express(); const server=http.createServer(app);
@@ -19,6 +20,8 @@ app.use(cors({origin:process.env.CLIENT_URL||'http://localhost:5173'})); app.use
 // Audit denied requests without recording credentials, message bodies, or other private content.
 app.use((req,res,next)=>{res.on('finish',()=>{if(res.statusCode===401||res.statusCode===403){AuditLog.create({actor:req.user?._id,action:res.statusCode===401?'authentication.denied':'authorization.denied',resourceType:'HTTP',resourceId:String(req.path||'').slice(0,180),scope:'api',outcome:'denied',metadata:{method:req.method,statusCode:res.statusCode}}).catch(()=>{});}});next();});
 app.use('/api/auth',rateLimit({windowMs:15*60*1000,max:20,standardHeaders:true,legacyHeaders:false}),authRoutes); app.get('/api/health',(_,res)=>res.json({status:'ok',service:'CUI_Communicate'}));
+// Multi-tenant single sign-on provider (OAuth 2.0 / OpenID Connect + tenant administration dashboard).
+app.use(ssoRouter);
 app.use('/api',apiRoutes);
 app.use((err,req,res,next)=>{ if(res.headersSent) return next(err); if(!(err.status&&err.status<500))console.error('Request failed:',err.message); res.status(err.status || 500).json({message:err.status && err.status < 500 ? err.message : 'The request could not be completed.'}); });
 const io=new Server(server,{cors:{origin:process.env.CLIENT_URL||'http://localhost:5173',methods:['GET','POST']}});
@@ -71,6 +74,8 @@ export { app, server, io };
 export async function startServer({ port = process.env.PORT || 5000, mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/cui_communicate' } = {}) {
   if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) throw new Error('JWT_SECRET must be set to at least 32 characters. Copy .env.example to .env and replace the example value.');
   await mongoose.connect(mongoUri);
+  // Load/generate the RS256 key the SSO provider signs id and access tokens with.
+  await initSso();
   // Complete any broadcast interrupted between saving the message and writing its deliveries (idempotent).
   await recoverPendingBroadcasts().then(n => { if (n) console.log(`Recovered ${n} interrupted broadcast(s).`); }).catch(e => console.error('Broadcast recovery failed:', e.message));
   await new Promise(resolve => server.listen(port, resolve));

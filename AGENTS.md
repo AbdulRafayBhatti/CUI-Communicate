@@ -44,3 +44,26 @@ docker compose -f docker-compose.base44.yml exec api npm run seed    # re-seed d
 Verification used to accept this environment: `curl http://localhost:3000/` (the dev server serves live source modules,
 not a prebuilt bundle), `curl http://localhost:8000/api/health`, and a browser pass signing in as `Student_1@comsats.edu.pk`
 that loaded Messages, Compose message, Message requests and Groups with no console errors.
+
+## Multi-tenant SSO platform (`server/src/sso/`, `demo-clients/`)
+
+1. The OIDC provider is mounted at the server root (`app.use(ssoRouter)` in `server/src/index.js`): `/oauth/*`, `/login`,
+   `/mfa*`, `/account`, `/forgot`, `/reset`, `/logout`, `/sso/oauth/{google,facebook}/*`, `/admin/*`, `/.well-known/…`,
+   `/jwks`, `/docs`. It owns only the `sso_*` collections and must never read or write the messaging models.
+2. `SSO_ISSUER` (compose passes `https://8000-${BASE44_PUBLIC_HOST_SUFFIX}`) is the issuer used in `iss`, in the
+   discovery document and for social callbacks — never hardcode it. `initSso()` loads or generates the RS256 keypair in
+   `sso_signing_keys`, so issued tokens are verifiable through `/jwks`.
+3. The SSO router parses `application/x-www-form-urlencoded` itself (no new dependency) and uses double-submit/session
+   CSRF tokens; the messaging API stays JSON-only and untouched.
+4. Sign-in throttling skips successful requests on purpose (`skipSuccessfulRequests`); the precise control is the
+   per-account lockout from the tenant policy. The preview proxy hides client IPs, so keep per-IP limits lenient.
+5. `npm run seed:sso` is idempotent and runs on every API start: it creates the demo tenant/accounts/client apps and
+   refreshes the client redirect URIs from `DEMO_PORTAL_URL` / `DEMO_LIBRARY_URL`, so a changing preview host cannot
+   break the flows. Passwords are set only on first creation — never reset by a seed run.
+6. Sample clients live in `demo-clients/campus-portal` (host 9101) and `demo-clients/library-desk` (host 9102): plain
+   Node, no dependencies, sharing `demo-clients/shared/oidc.js`.
+7. Google and Facebook flows are complete but need real OAuth credentials, which an administrator enters per tenant in
+   the dashboard; until then the button shows a "not configured" page. Never commit provider credentials.
+8. Verify changes with `MONGO_URI_TEST=mongodb://mongo:27017 npm test`, the SSO end-to-end checks, and a browser pass
+   through `9101 → provider login → 9101 → 9102` (the second client must not ask for credentials again).
+   Full endpoint list, demo accounts and the assignment mapping: `docs/SSO.md`.

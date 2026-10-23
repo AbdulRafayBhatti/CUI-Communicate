@@ -2,6 +2,14 @@
 
 A MERN + Socket.IO starter for the COMSATS University Communication System, based on the supplied SRS. It includes a React workspace UI, Express REST API, MongoDB models, JWT authentication, bcrypt password hashing, and authenticated Socket.IO events.
 
+## Multi-tenant Single Sign-On platform
+
+The same API also hosts a multi-tenant **OAuth 2.0 / OpenID Connect provider** with TOTP multi-factor authentication,
+rotating refresh tokens, Google/Facebook sign-in, an administration dashboard and two sample client applications
+(Campus Portal on port 9101, Library Desk on port 9102). See [`docs/SSO.md`](docs/SSO.md) for endpoints, tenancy,
+policy options, demo accounts and the assignment mapping; the provider pages start at `http://localhost:8000/login`
+and the dashboard at `http://localhost:8000/admin`.
+
 ## Requirements
 - Node.js 20+ recommended
 - MongoDB Community Server running locally, or a MongoDB Atlas connection string
