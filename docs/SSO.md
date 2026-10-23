@@ -87,7 +87,12 @@ same Google/Facebook buttons for every registered application.
 * Google and Facebook flows are fully implemented (state, nonce, PKCE for Google, code exchange, userinfo, secure
   linking that refuses to relink an account to a different identity of the same provider). **They need real client
   credentials**: enable the provider in *Administration → Identity providers* and paste the client ID/secret, or the
-  button shows a "not configured" page. In the Base44 sandbox the same two pairs of values can also arrive from the
+  button shows a "not configured" page. Credentials alone are not enough: each provider only accepts a redirect URI it
+  has been told about, so register `<issuer>/sso/oauth/google/callback` (and `/sso/oauth/facebook/callback`) as an
+  authorized redirect URI in the provider console — Google Cloud Console → Credentials → OAuth client → *Authorized
+  redirect URIs*, Facebook → Facebook Login → Settings → *Valid OAuth Redirect URIs*. It must match character for
+  character, otherwise the provider rejects the sign-in with `redirect_uri_mismatch`. The tenant settings page lists
+  the two URIs to copy. In the Base44 sandbox the same two pairs of values can also arrive from the
   environment (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`, `FACEBOOK_CLIENT_ID` / `FACEBOOK_CLIENT_SECRET`, delivered
   through `/run/base44/app.env`): the SSO seed copies them into the demo tenant while its provider slots are still
   empty, never overwriting credentials saved in the dashboard and never switching a provider on. Nothing is hardcoded

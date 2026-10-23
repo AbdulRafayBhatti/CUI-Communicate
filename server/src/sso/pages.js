@@ -272,6 +272,9 @@ export const adminTenantPage = ({ user, tenant, tenants = [], users = [], apps =
     <div><label for="${name}ClientId">${name} client ID</label><input id="${name}ClientId" name="${name}ClientId" value="${esc(provider?.clientId || '')}" placeholder="not configured"></div>
     <div><label for="${name}Secret">${name} client secret</label><input id="${name}Secret" name="${name}Secret" type="password" placeholder="${provider?.hasSecret ? 'stored — leave blank to keep' : 'not configured'}"></div>
   </div>`;
+  // The provider only accepts a redirect URI it has been told about, so show the exact one to register there.
+  const callbackBase = String(issuer || '').replace(/\/$/, '');
+  const socialCallbacks = ['google', 'facebook'].map(provider => `${callbackBase}/sso/oauth/${provider}/callback`);
   return shell({
     title: 'Tenant settings',
     user,
@@ -295,6 +298,7 @@ export const adminTenantPage = ({ user, tenant, tenants = [], users = [], apps =
       <h2 style="margin-top:22px">Identity providers</h2>
       ${providerField('google', settings.providers?.google)}
       ${providerField('facebook', settings.providers?.facebook)}
+      <p class="sub" style="margin-top:14px">Register the callback URL of each provider in its own console before enabling it — Google Cloud Console → Credentials → OAuth client → <strong>Authorized redirect URIs</strong>, Facebook → Facebook Login → Settings → <strong>Valid OAuth Redirect URIs</strong>. It has to match exactly, character for character, or the provider refuses the sign-in with <span class="mono">redirect_uri_mismatch</span>:<br>Google <span class="mono">${esc(socialCallbacks[0])}</span><br>Facebook <span class="mono">${esc(socialCallbacks[1])}</span></p>
       <button type="submit">Save settings</button>
     </form></div>
 
