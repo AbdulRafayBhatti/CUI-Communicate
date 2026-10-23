@@ -1,15 +1,22 @@
 import { Router } from 'express';
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
 import { User } from '../models/index.js';
 import { syncDefaultMemberships } from '../services/enrollment.js';
 import { requireAuth, safeUser } from '../middleware/auth.js';
+import { clearRefreshCookie, endSession, presentedRefreshToken, rotateSession, setRefreshCookie, startSession } from '../services/tokens.js';
 const router = Router();
 const wrapAsync = handler => handler.constructor?.name === 'AsyncFunction' ? (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next) : handler;
 for (const method of ['get', 'post', 'patch', 'delete']) {
   const original = router[method].bind(router);
   router[method] = (path, ...handlers) => original(path, ...handlers.map(wrapAsync));
+}
+// Every sign-in path (password, registration, campus SSO) issues the same session: a short-lived access token in the
+// response body and the rotating refresh token in an httpOnly cookie the browser never exposes to JavaScript.
+async function respondWithSession(req, res, user, status = 200) {
+  const session = await startSession(user, req);
+  setRefreshCookie(req, res, session.refreshToken);
+  res.status(status).json({ token: session.token, expiresIn: session.expiresIn, user: safeUser(user) });
 }
 router.post('/register', async (req,res) => {
   try {
@@ -21,8 +28,7 @@ router.post('/register', async (req,res) => {
     // Self-registration creates an unassigned student account. Organizational scope must be assigned by an authorized official.
     const user = await User.create({name:String(name).trim(),email:cleanEmail,passwordHash:await bcrypt.hash(password,12),role:'Student',campus:'',department:'',assignments:[]});
     await syncDefaultMemberships(user);
-    const token = jwt.sign({sub:String(user._id),sv:user.securityVersion},process.env.JWT_SECRET,{expiresIn:'12h',algorithm:'HS256'});
-    res.status(201).json({token,user:safeUser(user)});
+    await respondWithSession(req,res,user,201);
   } catch(e) { res.status(500).json({message:'Could not create account.'}); }
 });
 router.post('/login', async (req,res) => {
@@ -30,10 +36,27 @@ router.post('/login', async (req,res) => {
   const user=await User.findOne({email:String(email||'').trim().toLowerCase()}).select('+passwordHash');
   if (!user || user.status!=='active' || !await bcrypt.compare(password||'',user.passwordHash)) return res.status(401).json({message:'Email or password is incorrect.'});
   await syncDefaultMemberships(user);
-  const token=jwt.sign({sub:String(user._id),sv:user.securityVersion},process.env.JWT_SECRET,{expiresIn:'12h',algorithm:'HS256'});
-  res.json({token,user:safeUser(user)});
+  await respondWithSession(req,res,user);
 });
 router.get('/me',requireAuth,(req,res)=>res.json({user:safeUser(req.user)}));
+// Silent rotation: the SPA calls this on load and after a 401, so the short-lived access token is renewed without
+// the user signing in again. The refresh token itself travels only in the httpOnly cookie set below.
+router.post('/refresh', async (req,res) => {
+  const result = await rotateSession(presentedRefreshToken(req), req);
+  if (result.error) {
+    clearRefreshCookie(req,res);
+    if (result.error === 'reuse') console.warn('Refresh token reuse detected; session family revoked.');
+    return res.status(401).json({message:result.error==='reuse'?'This session was already replaced, so it was revoked for your safety. Sign in again.':result.error==='account'?'Your account is unavailable. Contact an authorized university official.':'Your session has expired. Sign in again.'});
+  }
+  setRefreshCookie(req,res,result.refreshToken);
+  res.json({token:result.token,expiresIn:result.expiresIn,user:safeUser(result.user)});
+});
+// Real server-side sign-out: the presented refresh family is revoked, so the cookie is worthless afterwards.
+router.post('/logout', async (req,res) => {
+  await endSession(presentedRefreshToken(req));
+  clearRefreshCookie(req,res);
+  res.json({ok:true});
+});
 // Sign in through the campus SSO provider (the Google/Facebook buttons on the login screen).
 // The workspace is an OpenID Connect client: the browser brings back an authorization code, this route exchanges it
 // with the client secret, verifies the RS256 id_token against the provider's JWKS and issues the usual workspace
@@ -79,8 +102,7 @@ router.post('/sso', async (req,res) => {
     }
     if(user.status!=='active')return res.status(403).json({message:'This account is not active. Contact an authorized university official.'});
     await syncDefaultMemberships(user);
-    const token=jwt.sign({sub:String(user._id),sv:user.securityVersion},process.env.JWT_SECRET,{expiresIn:'12h',algorithm:'HS256'});
-    res.json({token,user:safeUser(user)});
+    await respondWithSession(req,res,user);
   } catch(e) {
     console.error('SSO sign-in failed:',e.message);
     res.status(502).json({message:'The campus SSO provider could not be reached. Try again or sign in with your password.'});

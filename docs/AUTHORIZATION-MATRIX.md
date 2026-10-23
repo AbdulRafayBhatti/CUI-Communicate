@@ -85,7 +85,8 @@ Groups are **audiences**. There is no shared group chat; a broadcast is delivere
 
 - Passwords are bcrypt-hashed; hashes are excluded from API responses.
 - Login and self-registration require a `@comsats.edu.pk` email. Self-registration can create only an unassigned Student account; client-supplied role/campus/department values are ignored.
-- JWTs use HS256, expire after 12 hours, and include a security version. REST and Socket.IO verify the algorithm, current account status, and security version against MongoDB.
+- Access tokens are HS256 JWTs that expire after 15 minutes and include a security version. REST and Socket.IO verify the algorithm, current account status, and security version against MongoDB. The client keeps the access token in memory only; a rotating single-use refresh token in an httpOnly cookie renews it (see `docs/AUTH-FLOWS.md`).
+- A refresh token that is presented twice revokes its whole session family and bumps the security version, ending every access token for that account at once.
 - Password, status, role, campus/department, and assignment changes revoke existing sessions by incrementing the security version.
 - Authentication and message-request endpoints are rate-limited; socket messaging is rate-limited and content is limited to 5,000 characters.
 - Secrets remain in `server/.env`; `JWT_SECRET` must be at least 32 characters and must be changed from the example value.

@@ -47,6 +47,8 @@ export async function completeSsoSignIn() {
     if (!pending?.verifier || params.get('state') !== pending.state) throw new Error('This sign-in response did not match the request that started it.');
     const response = await fetch(`${API}/api/auth/sso`, {
       method: 'POST',
+      // credentials: the API answers with the httpOnly refresh cookie that keeps this session renewable.
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code, code_verifier: pending.verifier })
     });

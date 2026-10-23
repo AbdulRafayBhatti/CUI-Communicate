@@ -12,6 +12,29 @@
 10. Run syntax checks, the build and tests after edits. Integration tests need MongoDB: `MONGO_URI_TEST=mongodb://127.0.0.1:27017 npm test` (without it they are reported as **skipped / NOT RUN**, never as passed). Say exactly what was and was not run.
 11. Never commit secrets, real personal data or `.env` files. Do not deploy without security and acceptance review.
 
+## Workspace session tokens (`server/src/services/tokens.js`, `client/src/session.js`)
+
+Sign-in issues a 15-minute access JWT (kept in the browser's memory only, so `localStorage` holds **no** session) plus
+a rotating refresh token delivered as an `httpOnly` cookie whose `Path` is `/api/auth`. Only the SHA-256 hash is stored,
+in `RefreshToken`, grouped by family — one family per signed-in device. Non-obvious rules that are easy to break:
+
+1. A refresh token is **single use**. Presenting a used one revokes the whole family *and* bumps `securityVersion`, so
+   never "retry" a rotation with an old value; always continue with the value the last response returned.
+2. Each refresh token records the `securityVersion` it was issued under, so an existing password/role/status change
+   (which already bumps `sv`) ends refresh sessions as well — admin routes need no extra call. Do not add a second
+   revocation mechanism.
+3. The cookie is `SameSite=None; Secure` whenever the API's public origin is HTTPS (the web client and the API are
+   different sites, so `Lax` would never be sent), and `Lax` on `http://localhost`. Do not "simplify" it to `Lax`:
+   silent renewal then silently stops working and every page load shows the sign-in screen.
+4. `/api/auth/refresh` and `/api/auth/logout` are excluded from the strict 20-requests-per-15-minute credential
+   limiter, because the SPA refreshes on every page load and the preview proxy hides client IPs. Keep the strict limit
+   on register/login/SSO only.
+5. All client API traffic goes through `request()` in `client/src/session.js` (attaches the token, retries once after a
+   silent rotation on 401). Do not call `fetch` for API data directly, and never persist the token.
+6. Verify with `docker compose -f docker-compose.base44.yml exec -T api sh -c 'MONGO_URI_TEST=mongodb://mongo:27017 node --test test/auth.session.test.js'`
+   (rotation, reuse revoking the family, logout revocation, "no cookie means no session"). `docs/AUTH-FLOWS.md` has the
+   full workflow diagrams. MFA/TOTP and a Security page are not built yet.
+
 ## Base44 sandbox dev environment (`docker-compose.base44.yml`)
 
 The whole stack runs from this checkout with live reload — no application image is built or pulled:

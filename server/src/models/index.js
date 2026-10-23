@@ -147,7 +147,24 @@ const auditSchema = new Schema({
   metadata: Schema.Types.Mixed
 }, { timestamps: true });
 
+// Signed-in sessions: one *family* is one signed-in device. Only the SHA-256 hash of a refresh token is stored,
+// so the database never holds a usable credential. Rotation and reuse detection live in services/tokens.js.
+const refreshTokenSchema = new Schema({
+  user: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  familyId: { type: String, required: true, index: true },
+  tokenHash: { type: String, required: true, unique: true },
+  // The account security version at issue time: a password, role or status change invalidates outstanding sessions.
+  securityVersion: { type: Number, required: true },
+  userAgent: { type: String, default: '' },
+  expiresAt: { type: Date, required: true },
+  usedAt: { type: Date, default: null },
+  revokedAt: { type: Date, default: null },
+  revokedReason: { type: String, default: '' }
+}, { timestamps: true });
+refreshTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
 export const User = model('User', userSchema);
+export const RefreshToken = model('RefreshToken', refreshTokenSchema);
 export const Conversation = model('Conversation', conversationSchema);
 export const Group = model('Group', groupSchema);
 export const AuditLog = model('AuditLog', auditSchema);

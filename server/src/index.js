@@ -16,10 +16,17 @@ import ssoRouter, { initSso } from './sso/index.js';
 import { pathToFileURL } from 'url';
 
 const app=express(); const server=http.createServer(app);
-app.use(cors({origin:process.env.CLIENT_URL||'http://localhost:5173'})); app.use(express.json({limit:'1mb'}));
+// credentials: the browser must send and store the httpOnly refresh cookie on the auth endpoints.
+app.use(cors({origin:process.env.CLIENT_URL||'http://localhost:5173',credentials:true})); app.use(express.json({limit:'1mb'}));
 // Audit denied requests without recording credentials, message bodies, or other private content.
 app.use((req,res,next)=>{res.on('finish',()=>{if(res.statusCode===401||res.statusCode===403){AuditLog.create({actor:req.user?._id,action:res.statusCode===401?'authentication.denied':'authorization.denied',resourceType:'HTTP',resourceId:String(req.path||'').slice(0,180),scope:'api',outcome:'denied',metadata:{method:req.method,statusCode:res.statusCode}}).catch(()=>{});}});next();});
-app.use('/api/auth',rateLimit({windowMs:15*60*1000,max:20,standardHeaders:true,legacyHeaders:false}),authRoutes); app.get('/api/health',(_,res)=>res.json({status:'ok',service:'CUI_Communicate'}));
+// Credential endpoints (register/login/SSO) stay tightly limited. Silent rotation is excluded from that limit and
+// gets its own lenient one instead: the SPA refreshes on every page load, and the preview proxy hides client IPs, so
+// a strict per-IP credential limit would lock people out of their own session.
+const authLimiter=rateLimit({windowMs:15*60*1000,max:20,standardHeaders:true,legacyHeaders:false,skip:req=>['/refresh','/logout'].includes(String(req.path||''))});
+const sessionLimiter=rateLimit({windowMs:15*60*1000,max:900,standardHeaders:true,legacyHeaders:false});
+app.use('/api/auth/refresh',sessionLimiter); app.use('/api/auth/logout',sessionLimiter);
+app.use('/api/auth',authLimiter,authRoutes); app.get('/api/health',(_,res)=>res.json({status:'ok',service:'CUI_Communicate'}));
 // Multi-tenant single sign-on provider (OAuth 2.0 / OpenID Connect + tenant administration dashboard).
 app.use(ssoRouter);
 app.use('/api',apiRoutes);
