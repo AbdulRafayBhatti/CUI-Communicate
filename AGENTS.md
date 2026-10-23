@@ -33,7 +33,27 @@ in `RefreshToken`, grouped by family — one family per signed-in device. Non-ob
    silent rotation on 401). Do not call `fetch` for API data directly, and never persist the token.
 6. Verify with `docker compose -f docker-compose.base44.yml exec -T api sh -c 'MONGO_URI_TEST=mongodb://mongo:27017 node --test test/auth.session.test.js'`
    (rotation, reuse revoking the family, logout revocation, "no cookie means no session"). `docs/AUTH-FLOWS.md` has the
-   full workflow diagrams. MFA/TOTP and a Security page are not built yet.
+   full workflow diagrams.
+
+## Two-factor authentication and the Security page (`server/src/services/mfa.js`, `client/src/security.jsx`)
+
+1. Privileged roles (`MFA_REQUIRED_ROLES`: Technical Admin, Rector, Campus Incharge, HOD, Department Coordinator) must
+   carry a second factor. Until they enrol, `requireMfaEnrolled` closes `/api/*` (403 `MFA_ENROLLMENT_REQUIRED`) and
+   the Socket.IO handshake refuses the account, while the auth routes stay open so enrolment is always possible. The
+   SPA shows `MfaGate` instead of the workspace.
+2. With a second factor enrolled, `/api/auth/login` and `/api/auth/sso` return `{ mfaRequired, mfaToken }` and **no**
+   session; the real session comes only from `/api/auth/mfa/verify`. The `mfaToken` is a five-minute JWT with
+   `purpose: 'mfa'` — never accept it as an access token (`requireAuth` ignores the purpose, so check it if you ever
+   read that claim elsewhere).
+3. A TOTP step is single use (`mfa.lastStep`) and a recovery code is consumed on first use; a repeated code is a
+   refusal, not a typo. Do not add a "try the same code again" path.
+4. Enabling the factor must **not** bump `securityVersion` (the signed-in session has to survive enrolment); disabling
+   it must. `client/src/security.jsx` relies on that: `onProfileChange` keeps a returned token or re-reads
+   `/api/auth/me` when the response carries none.
+5. The Security page is `SecurityView`, rendered by `client/src/App.jsx` for `page === 'Security'` and opened from the
+   sidebar's **Security** item. The MFA/TOTP secret is AES-256-GCM encrypted with `MFA_ENCRYPTION_KEY` (default:
+   derived from `JWT_SECRET`); see `docs/AUTH-FLOWS.md` for the diagram and the endpoint list.
+6. Verify with `docker compose -f docker-compose.base44.yml exec -T api sh -c 'MONGO_URI_TEST=mongodb://mongo:27017 node --test test/auth.session.test.js test/auth.mfa.test.js'`.
 
 ## Base44 sandbox dev environment (`docker-compose.base44.yml`)
 

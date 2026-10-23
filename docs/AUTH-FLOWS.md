@@ -129,6 +129,58 @@ SPA ── POST /api/auth/logout (cookie) ─► revoke family + clear cookie �
 The cookie is worthless afterwards (verified by test: a later `/api/auth/refresh` answers 401). Other devices keep
 their own families and stay signed in — "revoke all sessions" is what a role/password change does.
 
+## 6. Two-step verification (TOTP)
+
+Privileged roles (`Technical Admin`, `Rector`, `Campus Incharge`, `HOD`, `Department Coordinator`) must carry a
+second factor: until one is enrolled, `/api/*` and the Socket.IO handshake refuse the account with
+`MFA_ENROLLMENT_REQUIRED`, and the SPA shows the enrolment gate instead of the workspace. Every other role may turn
+the second factor on or off from the **Security** page.
+
+With a second factor enrolled, the password (or campus SSO) step only proves the first one. Instead of a session the
+API answers `{ mfaRequired: true, mfaToken, expiresIn, methods }` — a five-minute, single-purpose JWT
+(`purpose: 'mfa'`) that can do nothing but finish this one sign-in — and `/api/auth/mfa/verify` issues the real session.
+
+```
+User            SPA                          API                                    MongoDB
+ │ email+pass    │                            │                                       │
+ ├──────────────►│ POST /api/auth/login       │                                       │
+ │               ├───────────────────────────►│ password ok → mfa.enabled?            │
+ │               │ 200 {mfaRequired,mfaToken} │ no session and no cookie yet          │
+ │               │◄───────────────────────────┤                                       │
+ │ 6-digit code  │ POST /api/auth/mfa/verify  │                                       │
+ ├──────────────►│ mfaToken + code            │ verifyTotp(afterStep = mfa.lastStep)  │
+ │               │                            ├─────── lastStep = step ──────────────►│
+ │               │ 200 {token,user} + cookie  │ session issued exactly as in §1       │
+ │               │◄───────────────────────────┤                                       │
+```
+
+Rules that are easy to break:
+
+1. A TOTP step is **single use** (`mfa.lastStep`): an already-accepted code is refused as a reuse, not as a typo, so
+   an observed code cannot be replayed. Recovery codes are bcrypt-hashed and consumed on first use.
+2. Five wrong codes lock the second-factor step for 15 minutes per account (`mfa.lockedUntil`), and the answer never
+   says which part was wrong. Password failures keep their own separate backoff.
+3. The TOTP secret is stored AES-256-GCM encrypted, keyed by `MFA_ENCRYPTION_KEY` when set and otherwise derived from
+   `JWT_SECRET`. A value that cannot be decrypted reads as “no usable secret” instead of throwing.
+4. Enrolment (`/mfa/setup` → `/mfa/enable`) keeps the candidate secret in `mfa.pendingSecret` for 15 minutes and only
+   promotes it once a code from the authenticator app verifies. The ten recovery codes are returned once, at that
+   moment; only their hashes are stored.
+5. Turning the second factor **off** is a downgrade: it needs a valid code, is refused for roles where MFA is
+   mandatory, bumps `securityVersion` and therefore ends every session on every device. Recovering a mandatory-MFA
+   account is a Technical Admin's job, not self-service.
+
+## 7. Devices signed in (the Security page)
+
+`GET /api/auth/sessions` lists one entry per refresh-token family — one per signed-in device — newest first, with
+`current: true` on the caller's own family. `DELETE /api/auth/sessions/:id` revokes a single family: signing another
+device out leaves this one alone, while revoking the current family also clears the cookie. A password, role, status
+or second-factor change bumps `securityVersion` and ends every family at once, so no extra endpoint is needed.
+
+The UI lives in `client/src/security.jsx`: `MfaChallenge` is step two of sign-in, `MfaGate` is the mandatory-enrolment
+gate shown instead of the workspace, and `SecurityView` is the page itself (second factor, signed-in devices,
+sign-in methods), rendered by `client/src/App.jsx` for `page === 'Security'` and opened from the sidebar's
+**Security** item.
+
 ## Endpoints
 
 | Endpoint | Body / cookie | Answer |
@@ -139,6 +191,12 @@ their own families and stay signed in — "revoke all sessions" is what a role/p
 | `POST /api/auth/refresh` | refresh cookie | `200 { token, expiresIn, user }` + rotated cookie, or `401` |
 | `POST /api/auth/logout` | refresh cookie | `200 { ok: true }`, family revoked and cookie cleared |
 | `GET /api/auth/me` | `Authorization: Bearer` | `200 { user }` |
+| `POST /api/auth/mfa/verify` | `{ mfaToken, code }`, or `recovery: true` with a recovery code | `200 { token, expiresIn, user }` + refresh cookie, or `401` |
+| `POST /api/auth/mfa/setup` | `Authorization: Bearer` | `200 { secret, otpauth, qr, expiresIn }` — a candidate secret, pending until confirmed |
+| `POST /api/auth/mfa/enable` | `{ code }` | `200 { enabled: true, recoveryCodes }` — the codes are shown only here |
+| `POST /api/auth/mfa/disable` | `{ code }`, or `recovery: true` | `200 { token, user }` + cookie; every other session ends |
+| `GET /api/auth/sessions` | `Authorization: Bearer` | `200 [ { id, userAgent, startedAt, lastUsedAt, current } ]` |
+| `DELETE /api/auth/sessions/:id` | `Authorization: Bearer` | `200 { ok, current, message }` |
 
 Rate limiting: the credential endpoints keep the strict limit (20 per 15 minutes per address). `/refresh` and
 `/logout` are excluded from it and use a lenient one instead, because the SPA refreshes on every page load and the
@@ -151,18 +209,32 @@ origin is HTTPS — the web client and the API are different sites, so a `Lax` c
 (`http://localhost`) it stays `Lax`, which is same-site and works without TLS. Nothing is hardcoded: the decision comes
 from `SSO_ISSUER`/`CLIENT_URL` and the `x-forwarded-proto` header.
 
+## Environment variables
+
+| Variable | Needed by | Notes |
+|---|---|---|
+| `JWT_SECRET` | the whole session layer | **Required at boot**, 32+ characters. Signs the 15-minute access token and the five-minute MFA challenge token. Rotating it invalidates every access token and every challenge at once; refresh cookies keep working until their next rotation. |
+| `MFA_ENCRYPTION_KEY` | TOTP secrets | Optional. AES-256-GCM key for `mfa.secret` / `mfa.pendingSecret`. When it is unset the key is derived from `JWT_SECRET`. Changing either value makes already-stored TOTP secrets undecryptable, which reads as “no usable secret”: affected accounts must enrol again. |
+| `CLIENT_URL` / `SSO_ISSUER` | cookie attributes, CORS | Decide whether the refresh cookie is `SameSite=None; Secure` (HTTPS public origin) or `Lax` (local `http://localhost`). Not MFA-specific — see *Cookie attributes* above. |
+
+Both secrets belong in the platform-managed secrets file (`/run/base44/app.env`), never in the repository. Locally the
+environment also needs `MONGO_URI`; the compose stack passes it.
+
 ## Tests
 
 ```
 docker compose -f docker-compose.base44.yml exec -T api sh -c \
-  'MONGO_URI_TEST=mongodb://mongo:27017 node --test test/auth.session.test.js'
+  'MONGO_URI_TEST=mongodb://mongo:27017 node --test test/auth.session.test.js test/auth.mfa.test.js'
 ```
 
-Covers: 15-minute token and cookie flags, rotation, replay revoking the family and bumping `sv`, a later rotation
-dying with the family, logout revocation, revocation on a security change, and "no cookie means no session".
+`auth.session.test.js` covers the 15-minute token and cookie flags, rotation, replay revoking the family and bumping
+`sv`, a later rotation dying with the family, logout revocation, revocation on a security change, and “no cookie means
+no session”. `auth.mfa.test.js` covers the second-factor challenge (no session before the code), TOTP and recovery
+verification, step reuse, per-account lockout, enrolment, mandatory MFA for privileged roles, single-device sign-out,
+and “turning the factor off ends every session”.
 
 ## Not implemented yet (from the agreed plan)
 
-MFA (TOTP enrolment, recovery codes, mandatory for privileged roles) and a Security page for linked providers and
-active sessions are still to come. Google and Facebook already work, but through the campus SSO provider (the
-workspace is an OIDC client of `cui-communicate`), not by calling Google directly from the messaging server.
+Linking *providers* to an account from the workspace Security page. Google and Facebook already sign in through the
+campus SSO provider (the workspace is an OIDC client of `cui-communicate`); what the Security page shows for them is
+that the method exists, not a per-provider link/unlink control. Nothing else from the security plan is outstanding.
