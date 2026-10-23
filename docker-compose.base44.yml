@@ -1,0 +1,100 @@
+# Base44 sandbox/dev stack for CUI_Communicate.
+# Everything runs from the cloned source with live reload (no application image is built or pulled):
+#   web  = React + Vite dev server on http://localhost:3000  (host port 3000)
+#   api  = Express + Socket.IO API on http://localhost:8000  (CLIENT_URL must match the web origin)
+#   mongo= local MongoDB with a persistent named volume
+#   seed = one-shot demo data + migration (exits when done)
+name: cui-communicate
+
+services:
+  mongo:
+    image: mongo:7
+    restart: on-failure
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval \"db.adminCommand('ping').ok\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    labels:
+      base44.project: "MongoDB"
+      base44.kind: "infra"
+
+  api:
+    image: node:22
+    restart: on-failure
+    working_dir: /app/server
+    depends_on:
+      mongo:
+        condition: service_healthy
+    volumes:
+      - ./server:/app/server
+    environment:
+      - PORT=5000
+      - MONGO_URI=mongodb://mongo:27017/cui_communicate
+      # Browser origin of the preview UI: Express CORS and Socket.IO only accept this origin.
+      - CLIENT_URL=https://3000-${BASE44_PUBLIC_HOST_SUFFIX}
+    # JWT_SECRET (required at boot, 32+ chars) arrives from the platform-managed secrets file.
+    env_file:
+      - /run/base44/app.env
+    ports:
+      - "8000:5000"
+    command: ["sh", "-ec", "npm ci --no-audit --no-fund && exec npm run dev"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 120s
+    labels:
+      base44.project: "CUI_Communicate API"
+      base44.kind: "api"
+      base44.port: "8000"
+
+  web:
+    image: node:22
+    restart: on-failure
+    working_dir: /app/client
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - ./client:/app/client
+    environment:
+      - VITE_API_URL=https://8000-${BASE44_PUBLIC_HOST_SUFFIX}
+      - BASE44_PREVIEW_MODE
+      - BASE44_SANDBOX_HOST_DOMAIN
+      # Vite >= 6.1 appends this platform-provided list to server.allowedHosts.
+      - __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS
+    ports:
+      - "3000:5173"
+    command: ["sh", "-ec", "npm ci --no-audit --no-fund && exec npm run dev"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5173/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 120s
+    labels:
+      base44.project: "CUI_Communicate Web"
+      base44.kind: "web"
+      base44.port: "3000"
+
+  # One-shot: applies migrations and creates the demo users/groups (idempotent).
+  # Runs after the API is healthy so the shared server/node_modules install is finished.
+  seed:
+    image: node:22
+    working_dir: /app/server
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - ./server:/app/server
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/cui_communicate
+    command: ["sh", "-ec", "npm run seed"]
+
+volumes:
+  mongo-data:

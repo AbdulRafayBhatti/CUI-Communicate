@@ -1,0 +1,17 @@
+{
+  "previewPort": 3000,
+  "healthPath": "/",
+  "startCommand": "docker compose -f docker-compose.base44.yml up -d",
+  "projects": [
+    { "name": "CUI_Communicate Web", "kind": "web", "hostPort": 3000, "service": "web" },
+    { "name": "CUI_Communicate API", "kind": "api", "hostPort": 8000, "service": "api" }
+  ],
+  "secrets": [
+    {
+      "name": "JWT_SECRET",
+      "description": "Session signing secret for the API (must be at least 32 characters). Local development placeholder; replace with your own value for any real deployment.",
+      "requiredAtBoot": true,
+      "generatedForDevelopment": true
+    }
+  ]
+}
