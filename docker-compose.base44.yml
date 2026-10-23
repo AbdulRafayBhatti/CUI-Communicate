@@ -3,7 +3,7 @@
 #   web  = React + Vite dev server on http://localhost:3000  (host port 3000)
 #   api  = Express + Socket.IO API on http://localhost:8000  (CLIENT_URL must match the web origin)
 #   mongo= local MongoDB with a persistent named volume
-#   seed = one-shot demo data + migration (exits when done)
+# The API applies migrations and creates the demo data itself on the first start against an empty database.
 name: cui-communicate
 
 services:
@@ -41,7 +41,20 @@ services:
       - /run/base44/app.env
     ports:
       - "8000:5000"
-    command: ["sh", "-ec", "npm ci --no-audit --no-fund && exec npm run dev"]
+    command:
+      - sh
+      - -ec
+      - |
+        npm ci --no-audit --no-fund
+        # Migrations + demo data run once, while the database is still empty. The seed itself is idempotent,
+        # but it resets the demo accounts, so a restart must not repeat it.
+        # Re-seed by hand with: docker compose -f docker-compose.base44.yml exec api npm run seed
+        if node --input-type=module -e "import mongoose from 'mongoose'; await mongoose.connect(process.env.MONGO_URI); const empty=(await mongoose.connection.db.collection('users').estimatedDocumentCount())===0; await mongoose.disconnect(); process.exit(empty?1:0)"; then
+          echo 'Demo data already present; skipping seed.'
+        else
+          npm run seed
+        fi
+        exec npm run dev
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 15s
@@ -81,20 +94,6 @@ services:
       base44.project: "CUI_Communicate Web"
       base44.kind: "web"
       base44.port: "3000"
-
-  # One-shot: applies migrations and creates the demo users/groups (idempotent).
-  # Runs after the API is healthy so the shared server/node_modules install is finished.
-  seed:
-    image: node:22
-    working_dir: /app/server
-    depends_on:
-      api:
-        condition: service_healthy
-    volumes:
-      - ./server:/app/server
-    environment:
-      - MONGO_URI=mongodb://mongo:27017/cui_communicate
-    command: ["sh", "-ec", "npm run seed"]
 
 volumes:
   mongo-data:

@@ -17,9 +17,9 @@
 The whole stack runs from this checkout with live reload — no application image is built or pulled:
 
 ```bash
-docker compose -f docker-compose.base44.yml up -d          # mongo + api + web + one-shot seed
-docker compose -f docker-compose.base44.yml logs -f web     # dev-server output
-docker compose -f docker-compose.base44.yml run --rm seed   # re-seed demo data (idempotent)
+docker compose -f docker-compose.base44.yml up -d                   # mongo + api + web
+docker compose -f docker-compose.base44.yml logs -f web              # dev-server output
+docker compose -f docker-compose.base44.yml exec api npm run seed    # re-seed demo data (idempotent)
 ```
 
 - Web entry point is host port **3000** (Vite dev server on 5173 inside the container); the API is on host port **8000**
@@ -31,7 +31,10 @@ docker compose -f docker-compose.base44.yml run --rm seed   # re-seed demo data 
   replace it with a real secret for any real deployment. `server/.env` and `client/.env` are gitignored and are **not** used
   inside the containers (dotenv does not override process environment variables).
 - Dependencies install at container start (`npm ci`) into `server/node_modules` / `client/node_modules` (both gitignored).
-  The `seed` service deliberately waits for the `api` healthcheck so it reuses that install instead of running a second one.
+- The API applies migrations and seeds the demo data itself on its first start against an empty database. The seed is
+  guarded (it only runs while the `users` collection is empty) so a restart never repeats it and never resets accounts
+  that were changed in the UI; because of that there is no separate one-shot container. Re-seed by hand with
+  `docker compose -f docker-compose.base44.yml exec api npm run seed`.
 - `client/vite.config.js` is part of this setup: it registers `@vitejs/plugin-react` (fast refresh) and, **only when
   `BASE44_PREVIEW_MODE=1`**, allows the preview proxy host (`__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS` plus
   `.${BASE44_SANDBOX_HOST_DOMAIN}`). With the flag unset, Vite's default host checking is unchanged.
