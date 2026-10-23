@@ -63,7 +63,11 @@ that loaded Messages, Compose message, Message requests and Groups with no conso
 6. Sample clients live in `demo-clients/campus-portal` (host 9101) and `demo-clients/library-desk` (host 9102): plain
    Node, no dependencies, sharing `demo-clients/shared/oidc.js`.
 7. Google and Facebook flows are complete but need real OAuth credentials, which an administrator enters per tenant in
-   the dashboard; until then the button shows a "not configured" page. Never commit provider credentials.
+   the dashboard; until then the button shows a "not configured" page. In this sandbox they may also be supplied as
+   secrets (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`, `FACEBOOK_CLIENT_ID` / `FACEBOOK_CLIENT_SECRET`): `npm run
+   seed:sso` copies them into the demo tenant while its provider slots are still empty — it never overwrites values
+   saved in the dashboard and never switches a provider on (enable it in the dashboard afterwards). Never commit
+   provider credentials.
 8. Verify changes with `MONGO_URI_TEST=mongodb://mongo:27017 npm test`, the SSO end-to-end checks, and a browser pass
    through `9101 → provider login → 9101 → 9102` (the second client must not ask for credentials again).
    Full endpoint list, demo accounts and the assignment mapping: `docs/SSO.md`.

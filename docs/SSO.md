@@ -70,7 +70,11 @@ the single sign-on demonstration required by the assignment.
 * Google and Facebook flows are fully implemented (state, nonce, PKCE for Google, code exchange, userinfo, secure
   linking that refuses to relink an account to a different identity of the same provider). **They need real client
   credentials**: enable the provider in *Administration → Identity providers* and paste the client ID/secret, or the
-  button shows a "not configured" page. Nothing is hardcoded and no real credentials are committed.
+  button shows a "not configured" page. In the Base44 sandbox the same two pairs of values can also arrive from the
+  environment (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`, `FACEBOOK_CLIENT_ID` / `FACEBOOK_CLIENT_SECRET`, delivered
+  through `/run/base44/app.env`): the SSO seed copies them into the demo tenant while its provider slots are still
+  empty, never overwriting credentials saved in the dashboard and never switching a provider on. Nothing is hardcoded
+  and no real credentials are committed.
 
 ## Demo data
 

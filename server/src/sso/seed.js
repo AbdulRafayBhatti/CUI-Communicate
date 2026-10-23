@@ -5,8 +5,42 @@ import bcrypt from 'bcryptjs';
 import mongoose from 'mongoose';
 import { pathToFileURL } from 'url';
 import { SsoClientApp, SsoTenant, SsoUser } from './models.js';
+import { audit } from './security.js';
 
 export const DEMO_PASSWORD = process.env.SSO_DEMO_PASSWORD || 'Demo@12345';
+
+// Provider credentials normally come from the administration dashboard, per tenant. When real credentials are
+// supplied through the environment instead, the demo tenant is provisioned from them — but only where nothing is
+// configured yet: credentials an administrator saved are never overwritten, and the seed never switches a
+// provider on (that stays a tenant decision in the dashboard).
+const PROVIDER_CREDENTIAL_ENV = {
+  google: { clientId: 'GOOGLE_CLIENT_ID', clientSecret: 'GOOGLE_CLIENT_SECRET' },
+  facebook: { clientId: 'FACEBOOK_CLIENT_ID', clientSecret: 'FACEBOOK_CLIENT_SECRET' }
+};
+
+async function provisionProviderCredentials(tenant) {
+  const supplied = Object.entries(PROVIDER_CREDENTIAL_ENV)
+    .filter(([, names]) => process.env[names.clientId] && process.env[names.clientSecret]);
+  if (!supplied.length) return [];
+  // Client secrets are excluded from ordinary queries, so read the tenant back with them selected.
+  const detailed = await SsoTenant.findById(tenant._id).select('+settings.providers.google.clientSecret +settings.providers.facebook.clientSecret');
+  const update = {};
+  const applied = [];
+  for (const [provider, names] of supplied) {
+    const clientId = String(process.env[names.clientId]).trim();
+    const clientSecret = String(process.env[names.clientSecret]).trim();
+    const current = detailed.settings?.providers?.[provider] || {};
+    if (current.clientId || current.clientSecret) continue;
+    update[`settings.providers.${provider}.clientId`] = clientId;
+    update[`settings.providers.${provider}.clientSecret`] = clientSecret;
+    applied.push(provider);
+  }
+  if (applied.length) {
+    await SsoTenant.updateOne({ _id: tenant._id }, { $set: update });
+    await audit({ tenantId: tenant._id, type: 'provider.credentials_provisioned', detail: applied.join(', ') });
+  }
+  return applied;
+}
 
 const demoUsers = tenant => [
   { tenantId: null, email: 'sso_admin@comsats.edu.pk', name: 'SSO Platform Admin', role: 'platform_admin' },
@@ -73,7 +107,8 @@ export async function seedSsoDatabase() {
       await SsoClientApp.create({ ...update, clientId: definition.clientId, clientSecretHash: await bcrypt.hash(definition.secret, 12) });
     }
   }
-  return { tenant: tenants.comsats, clientApps: apps.length, clientIds: apps.map(app => app.clientId) };
+  const providers = await provisionProviderCredentials(tenants.comsats);
+  return { tenant: tenants.comsats, clientApps: apps.length, clientIds: apps.map(app => app.clientId), providers };
 }
 
 async function main() {
@@ -81,6 +116,7 @@ async function main() {
   await mongoose.connect(process.env.MONGO_URI);
   const result = await seedSsoDatabase();
   console.log(`SSO seed complete: tenant "${result.tenant.name}", ${result.clientApps} client applications (${result.clientIds.join(', ')}).`);
+  if (result.providers.length) console.log(`Provider credentials supplied by the environment were stored for: ${result.providers.join(', ')} — enable each provider per tenant in the dashboard to show its sign-in button.`);
   console.log(`Demo password for the SSO accounts: ${DEMO_PASSWORD}`);
   await mongoose.disconnect();
 }
