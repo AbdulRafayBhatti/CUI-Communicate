@@ -10,6 +10,7 @@ import authRoutes from './routes/auth.js';
 import apiRoutes from './routes/api.js';
 import { User, Conversation, AuditLog } from './models/index.js';
 import { canDirectWithoutRequest, relationshipSnapshot, relationshipSnapshotMatches, audit } from './services/policy.js';
+import { mfaRequiredFor } from './services/mfa.js';
 import { setRealtimeServer } from './services/realtime.js';
 import { recoverPendingBroadcasts } from './services/broadcast.js';
 import ssoRouter, { initSso } from './sso/index.js';
@@ -20,12 +21,14 @@ const app=express(); const server=http.createServer(app);
 app.use(cors({origin:process.env.CLIENT_URL||'http://localhost:5173',credentials:true})); app.use(express.json({limit:'1mb'}));
 // Audit denied requests without recording credentials, message bodies, or other private content.
 app.use((req,res,next)=>{res.on('finish',()=>{if(res.statusCode===401||res.statusCode===403){AuditLog.create({actor:req.user?._id,action:res.statusCode===401?'authentication.denied':'authorization.denied',resourceType:'HTTP',resourceId:String(req.path||'').slice(0,180),scope:'api',outcome:'denied',metadata:{method:req.method,statusCode:res.statusCode}}).catch(()=>{});}});next();});
-// Credential endpoints (register/login/SSO) stay tightly limited. Silent rotation is excluded from that limit and
-// gets its own lenient one instead: the SPA refreshes on every page load, and the preview proxy hides client IPs, so
-// a strict per-IP credential limit would lock people out of their own session.
-const authLimiter=rateLimit({windowMs:15*60*1000,max:20,standardHeaders:true,legacyHeaders:false,skip:req=>['/refresh','/logout'].includes(String(req.path||''))});
+// Credential endpoints (register/login/SSO) stay tightly limited. Silent rotation, the second-factor endpoints and
+// session management are excluded from that limit and get their own lenient one instead: the SPA refreshes on every
+// page load, the preview proxy hides client IPs, and the precise controls for those routes are single-use refresh
+// tokens plus the per-account attempt counting in services/mfa.js.
+const lenientAuthPaths = ['/refresh', '/logout', '/sessions', '/mfa'];
+const authLimiter=rateLimit({windowMs:15*60*1000,max:Number(process.env.AUTH_RATE_MAX)||20,standardHeaders:true,legacyHeaders:false,skip:req=>lenientAuthPaths.some(path=>String(req.path||'')===path||String(req.path||'').startsWith(`${path}/`))});
 const sessionLimiter=rateLimit({windowMs:15*60*1000,max:900,standardHeaders:true,legacyHeaders:false});
-app.use('/api/auth/refresh',sessionLimiter); app.use('/api/auth/logout',sessionLimiter);
+app.use(['/api/auth/refresh','/api/auth/logout','/api/auth/sessions','/api/auth/mfa'],sessionLimiter);
 app.use('/api/auth',authLimiter,authRoutes); app.get('/api/health',(_,res)=>res.json({status:'ok',service:'CUI_Communicate'}));
 // Multi-tenant single sign-on provider (OAuth 2.0 / OpenID Connect + tenant administration dashboard).
 app.use(ssoRouter);
@@ -35,7 +38,7 @@ const io=new Server(server,{cors:{origin:process.env.CLIENT_URL||'http://localho
 setRealtimeServer(io);
 const socketMessageWindows = new Map();
 function allowSocketMessage(userId, limit = 30, windowMs = 60_000) { const now = Date.now(); const recent = (socketMessageWindows.get(String(userId)) || []).filter(t => now - t < windowMs); if (recent.length >= limit) { socketMessageWindows.set(String(userId), recent); return false; } recent.push(now); socketMessageWindows.set(String(userId), recent); return true; }
-io.use(async(socket,next)=>{try{const token=socket.handshake.auth?.token;if(!token)throw new Error('Sign in required');const p=jwt.verify(token,process.env.JWT_SECRET,{algorithms:['HS256']});const user=await User.findById(p.sub);if(!user||user.status!=='active')throw new Error('Account unavailable');if(!Number.isInteger(p.sv)||p.sv!==user.securityVersion)throw new Error('Session revoked. Sign in again.');socket.user=user;next();}catch(e){next(new Error(e.message||'Unauthorized'));}});
+io.use(async(socket,next)=>{try{const token=socket.handshake.auth?.token;if(!token)throw new Error('Sign in required');const p=jwt.verify(token,process.env.JWT_SECRET,{algorithms:['HS256']});const user=await User.findById(p.sub);if(!user||user.status!=='active')throw new Error('Account unavailable');if(!Number.isInteger(p.sv)||p.sv!==user.securityVersion)throw new Error('Session revoked. Sign in again.');if(mfaRequiredFor(user.role)&&!user.mfa?.enabled)throw new Error('Two-factor authentication is required for your role. Set it up under Security to continue.');socket.user=user;next();}catch(e){next(new Error(e.message||'Unauthorized'));}});
 io.on('connection',async socket=>{
   socket.data.userId = String(socket.user._id); socket.data.authVersion = socket.user.securityVersion;
   const userRoom = `user:${socket.data.userId}`;

@@ -108,3 +108,14 @@ export async function endSession(rawToken, reason = 'logout') {
   await revokeFamily(record.familyId, reason);
   return true;
 }
+
+/** The session family the presented cookie belongs to, so the Security page can mark "this device". */
+export async function presentedFamily(req) {
+  const rawToken = presentedRefreshToken(req);
+  if (!rawToken) return null;
+  const record = await RefreshToken.findOne({ tokenHash: sha256(rawToken) });
+  return record ? record.familyId : null;
+}
+
+/** Ends one named session family (sign out a single device from the Security page). */
+export const revokeFamilyById = (familyId, reason = 'signed_out_by_user') => revokeFamily(familyId, reason);

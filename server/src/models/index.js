@@ -25,7 +25,24 @@ const userSchema = new Schema({
   status: { type: String, enum: ['active', 'suspended', 'deactivated'], default: 'active' },
   avatarColor: { type: String, default: '#176b55' },
   lastSeen: Date,
-  securityVersion: { type: Number, default: 1 }
+  securityVersion: { type: Number, default: 1 },
+  // Second factor (TOTP). The shared secret is stored encrypted with AES-256-GCM and never selected by default,
+  // and recovery codes are kept only as bcrypt hashes, so this collection holds no usable credential.
+  mfa: {
+    enabled: { type: Boolean, default: false },
+    secret: { type: String, default: '', select: false },
+    pendingSecret: { type: String, default: '', select: false },
+    pendingCreatedAt: Date,
+    recoveryCodes: { type: [{ _id: false, hash: String, usedAt: Date }], default: [], select: false },
+    // The last accepted time step, so an observed code cannot be replayed.
+    lastStep: { type: Number, default: -1 },
+    enabledAt: Date,
+    attempts: { type: Number, default: 0 },
+    lockedUntil: Date
+  },
+  // Password backoff, counted per account (the preview proxy hides client IPs, so per-IP limits stay lenient).
+  failedLogins: { type: Number, default: 0 },
+  lockedUntil: Date
 }, { timestamps: true });
 
 const messageSchema = new Schema({

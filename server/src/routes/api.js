@@ -2,7 +2,7 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
 import { User, Conversation, Group } from '../models/index.js';
-import { requireAuth, safeUser } from '../middleware/auth.js';
+import { requireAuth, requireMfaEnrolled, safeUser } from '../middleware/auth.js';
 import { notifyUser, notifyUsers } from '../services/realtime.js';
 import { syncDefaultMemberships, enrollEligibleInGroup } from '../services/enrollment.js';
 import broadcastRoutes from './broadcasts.js';
@@ -18,6 +18,8 @@ for (const method of ['get', 'post', 'patch', 'delete']) {
   router[method] = (path, ...handlers) => original(path, ...handlers.map(wrapAsync));
 }
 router.use(requireAuth);
+// Privileged roles work through the messaging API only once their second factor is enrolled (see services/mfa.js).
+router.use(requireMfaEnrolled);
 router.use('/broadcasts', broadcastRoutes);
 const id = value => String(value?._id ?? value ?? '');
 const escaped = value => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -180,7 +182,7 @@ router.get('/technical/users', async (req, res) => {
   const q = String(req.query.q || '').trim().slice(0, 80);
   const filter = {};
   if (q) { const safeQ = escaped(q); filter.$or = [{ name: { $regex: safeQ, $options: 'i' } }, { email: { $regex: safeQ, $options: 'i' } }]; }
-  res.json(await User.find(filter).select('name email role campus department status').limit(100));
+  res.json(await User.find(filter).select('name email role campus department status mfa').limit(100));
 });
 router.patch('/technical/users/:id/recovery', async (req, res) => {
   if (!hasScopedPermission(req.user, 'system:technical', { scope: 'university' }) || !hasScopedPermission(req.user, 'accounts:recover', { scope: 'university' })) return res.status(403).json({ message: 'Technical account-recovery permission is required.' });
@@ -201,6 +203,21 @@ router.patch('/technical/users/:id/recovery', async (req, res) => {
   await revalidateGroupsForUser(target, req.user, 'technical-account-status-change');
   await audit(req.user, 'technical.account.recovered', 'User', target._id, 'technical', { passwordReset: password !== undefined, status: target.status });
   res.json({ message: 'Account recovery action completed.', user: safeUser(target) });
+});
+
+// A lost or compromised second factor is recovered by a Technical Admin: the reset is audited and it bumps
+// securityVersion, so every outstanding session for that account ends immediately and a fresh sign-in is required.
+router.post('/technical/users/:id/mfa-reset', async (req, res) => {
+  if (!hasScopedPermission(req.user, 'system:technical', { scope: 'university' }) || !hasScopedPermission(req.user, 'accounts:recover', { scope: 'university' })) return res.status(403).json({ message: 'Technical account-recovery permission is required.' });
+  const target = await User.findById(req.params.id);
+  if (!target) return res.status(404).json({ message: 'Account not found.' });
+  if (target._id.equals(req.user._id)) return res.status(400).json({ message: 'Use the account security workflow to manage your own second factor.' });
+  if (!target.mfa?.enabled) return res.status(400).json({ message: 'This account does not have two-factor authentication enabled.' });
+  target.mfa = { enabled: false, secret: '', pendingSecret: '', recoveryCodes: [], lastStep: -1, attempts: 0 };
+  target.securityVersion += 1;
+  await target.save();
+  await audit(req.user, 'technical.mfa.reset', 'User', target._id, 'technical');
+  res.json({ message: `${target.name} must sign in again and set up a new second factor.`, user: safeUser(target) });
 });
 
 // Institutional role assignment controls are intentionally separate from technical administration.

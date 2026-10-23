@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import mongoose from 'mongoose';
 import { io as ioc } from 'socket.io-client';
+import { totpCode } from '../src/services/mfa.js';
 
 const URI = process.env.MONGO_URI_TEST;
 const skip = URI ? false : 'MONGO_URI_TEST is not set (integration tests need MongoDB) — NOT RUN';
@@ -22,7 +23,34 @@ const api = async (path, token, { method = 'GET', body } = {}) => {
   let json = null; try { json = await res.json(); } catch { /* empty body */ }
   return { status: res.status, body: json };
 };
-const login = async name => { const r = await api('/auth/login', null, { method: 'POST', body: { email: `${name}@comsats.edu.pk`, password: 'Demo@12345' } }); assert.equal(r.status, 200, `login ${name}`); acc[name] = { token: r.body.token, user: r.body.user }; return acc[name]; };
+const mfaState = {};                 // demo name -> { secret, logins } for the officials enrolled below
+const login = async name => {
+  const r = await api('/auth/login', null, { method: 'POST', body: { email: `${name}@comsats.edu.pk`, password: 'Demo@12345' } });
+  assert.equal(r.status, 200, `login ${name}`);
+  if (r.body.mfaRequired) {
+    // A later sign-in for an official that already carries the second factor this helper enrolled.
+    const state = mfaState[name];
+    assert.ok(state, `second factor state for ${name}`);
+    const verified = await api('/auth/mfa/verify', null, { method: 'POST', body: { mfaToken: r.body.mfaToken, code: totpCode(state.secret, Date.now() + state.logins * 30_000) } });
+    assert.equal(verified.status, 200, `mfa verify ${name}`);
+    state.logins += 1;
+    acc[name] = { token: verified.body.token, user: verified.body.user };
+    return acc[name];
+  }
+  acc[name] = { token: r.body.token, user: r.body.user };
+  // Privileged roles must carry a second factor before the messaging API accepts them (see services/mfa.js), so the
+  // official demo accounts of this suite enrol one here: set-up, then a code computed from the returned secret. The
+  // enrolment consumes the *previous* time step, which leaves the current and next steps usable for a later sign-in.
+  if (r.body.user?.mfaEnrollmentRequired) {
+    const setup = await api('/auth/mfa/setup', r.body.token, { method: 'POST' });
+    assert.equal(setup.status, 200, `mfa setup ${name}`);
+    const enabled = await api('/auth/mfa/enable', r.body.token, { method: 'POST', body: { code: totpCode(setup.body.secret, Date.now() - 30_000) } });
+    assert.equal(enabled.status, 200, `mfa enrolment ${name}`);
+    mfaState[name] = { secret: setup.body.secret, logins: 0 };
+    acc[name].user.mfaEnrollmentRequired = false;
+  }
+  return acc[name];
+};
 const connect = token => new Promise((resolve, reject) => { const s = ioc(base, { auth: { token }, transports: ['websocket'], forceNew: true, reconnection: false }); sockets.push(s); s.on('connect', () => resolve(s)); s.on('connect_error', reject); });
 const once = (s, ev, ms = 4000) => new Promise((resolve, reject) => { const t = setTimeout(() => reject(new Error(`timed out waiting for ${ev}`)), ms); s.once(ev, p => { clearTimeout(t); resolve(p); }); });
 const silent = (s, ev, ms = 800) => new Promise(resolve => { let got = false; const h = () => { got = true; }; s.on(ev, h); setTimeout(() => { s.off(ev, h); resolve(!got); }, ms); });
