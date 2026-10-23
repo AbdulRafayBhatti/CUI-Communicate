@@ -81,9 +81,13 @@ export async function seedSsoDatabase() {
 
   const portalUrl = process.env.DEMO_PORTAL_URL || 'http://localhost:9101';
   const libraryUrl = process.env.DEMO_LIBRARY_URL || 'http://localhost:9102';
+  // The messaging workspace is a registered client too: its login page offers Google/Facebook and returns the
+  // authorization code to the workspace API, which exchanges it for its own session.
+  const messagingUrl = (process.env.MESSAGING_URL || process.env.CLIENT_URL || 'http://localhost:5173').replace(/\/+$/, '');
   const apps = [
     { name: 'Campus Portal', clientId: 'campus-portal', secret: process.env.PORTAL_CLIENT_SECRET || 'campus-portal-demo-secret', redirect: `${portalUrl}/callback`, description: 'Sample first-party client: student portal.' },
-    { name: 'Library Desk', clientId: 'library-desk', secret: process.env.LIBRARY_CLIENT_SECRET || 'library-desk-demo-secret', redirect: `${libraryUrl}/callback`, description: 'Sample first-party client: library desk.' }
+    { name: 'Library Desk', clientId: 'library-desk', secret: process.env.LIBRARY_CLIENT_SECRET || 'library-desk-demo-secret', redirect: `${libraryUrl}/callback`, description: 'Sample first-party client: library desk.' },
+    { name: 'CUI_Communicate Workspace', clientId: process.env.SSO_CLIENT_ID || 'cui-communicate', secret: process.env.MESSAGING_CLIENT_SECRET || 'cui-communicate-demo-secret', redirect: `${messagingUrl}/sso/callback`, logout: `${messagingUrl}/`, description: 'The university messaging workspace: sign-in with the campus account, Google or Facebook.' }
   ];
   for (const definition of apps) {
     const existing = await SsoClientApp.findOne({ clientId: definition.clientId });
@@ -93,7 +97,7 @@ export async function seedSsoDatabase() {
       description: definition.description,
       type: 'confidential',
       redirectUris: [definition.redirect],
-      postLogoutRedirectUris: [definition.redirect.replace('/callback', '/')],
+      postLogoutRedirectUris: [definition.logout || definition.redirect.replace('/callback', '/')],
       scopes: ['openid', 'profile', 'email'],
       active: true
     };

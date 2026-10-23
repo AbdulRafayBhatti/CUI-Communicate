@@ -6,7 +6,9 @@ A MERN + Socket.IO starter for the COMSATS University Communication System, base
 
 The same API also hosts a multi-tenant **OAuth 2.0 / OpenID Connect provider** with TOTP multi-factor authentication,
 rotating refresh tokens, Google/Facebook sign-in, an administration dashboard and two sample client applications
-(Campus Portal on port 9101, Library Desk on port 9102). See [`docs/SSO.md`](docs/SSO.md) for endpoints, tenancy,
+(Campus Portal on port 9101, Library Desk on port 9102). The workspace signs in through the same provider — its login
+page offers Google and Facebook — so one campus account unlocks the messaging workspace and both sample applications.
+See [`docs/SSO.md`](docs/SSO.md) for endpoints, tenancy,
 policy options, demo accounts and the assignment mapping; the provider pages start at `http://localhost:8000/login`
 and the dashboard at `http://localhost:8000/admin`.
 

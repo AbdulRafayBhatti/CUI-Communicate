@@ -45,6 +45,11 @@ services:
       # Development-only credentials shared with the sample clients below (not used in production).
       - PORTAL_CLIENT_SECRET=campus-portal-demo-secret
       - LIBRARY_CLIENT_SECRET=library-desk-demo-secret
+      # The messaging workspace is registered as an SSO client as well (Google/Facebook on its login page):
+      # its own public URL, the client_id the provider knows it by, and the matching client secret.
+      - MESSAGING_URL=https://3000-${BASE44_PUBLIC_HOST_SUFFIX}
+      - SSO_CLIENT_ID=cui-communicate
+      - MESSAGING_CLIENT_SECRET=cui-communicate-demo-secret
     # JWT_SECRET (required at boot, 32+ chars) arrives from the platform-managed secrets file.
     env_file:
       - /run/base44/app.env

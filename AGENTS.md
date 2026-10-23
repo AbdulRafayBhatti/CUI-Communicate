@@ -71,3 +71,13 @@ that loaded Messages, Compose message, Message requests and Groups with no conso
 8. Verify changes with `MONGO_URI_TEST=mongodb://mongo:27017 npm test`, the SSO end-to-end checks, and a browser pass
    through `9101 → provider login → 9101 → 9102` (the second client must not ask for credentials again).
    Full endpoint list, demo accounts and the assignment mapping: `docs/SSO.md`.
+9. The messaging workspace is a registered client too (`cui-communicate`): its login page shows Google/Facebook buttons
+   that start the provider's social flow and return to `<web origin>/sso/callback`, where `POST /api/auth/sso`
+   exchanges the code (client secret + PKCE) and verifies the RS256 `id_token` against `/jwks` (issuer, audience,
+   expiry) before issuing the usual workspace JWT. `MESSAGING_URL` (web origin) and `MESSAGING_CLIENT_SECRET` (a
+   development demo value, like the sample clients') are passed by compose; `SSO_CLIENT_ID` defaults to
+   `cui-communicate`. The provider still owns only the `sso_*` collections and the workspace never reads them. A first
+   sign-in from a campus identity without a workspace account provisions the same unassigned Student account
+   self-registration creates. Note when testing: the Base44 preview pane returns to the app's home route when the
+   browser leaves for the provider, so complete a Google/Facebook sign-in in a normal browser tab pointed at the web
+   origin.

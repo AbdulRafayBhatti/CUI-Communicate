@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { User } from '../models/index.js';
@@ -33,4 +34,56 @@ router.post('/login', async (req,res) => {
   res.json({token,user:safeUser(user)});
 });
 router.get('/me',requireAuth,(req,res)=>res.json({user:safeUser(req.user)}));
+// Sign in through the campus SSO provider (the Google/Facebook buttons on the login screen).
+// The workspace is an OpenID Connect client: the browser brings back an authorization code, this route exchanges it
+// with the client secret, verifies the RS256 id_token against the provider's JWKS and issues the usual workspace
+// session. The SSO platform keeps ownership of its own collections — nothing here reads the `sso_*` models.
+const ssoIssuer=()=>String(process.env.SSO_ISSUER||'').replace(/\/+$/,'');
+const ssoClientId=()=>process.env.SSO_CLIENT_ID||'cui-communicate';
+const ssoRedirectUri=()=>`${String(process.env.MESSAGING_URL||process.env.CLIENT_URL||'http://localhost:5173').replace(/\/+$/,'')}/sso/callback`;
+async function verifyIdToken(idToken){
+  const [header,payload,signature]=String(idToken||'').split('.');
+  if(!header||!payload||!signature)return {error:'The campus SSO provider did not return a valid identity token.'};
+  let decoded,claims;
+  try{decoded=JSON.parse(Buffer.from(header,'base64url').toString('utf8'));claims=JSON.parse(Buffer.from(payload,'base64url').toString('utf8'));}catch{return {error:'The campus SSO provider returned an unreadable identity token.'};}
+  const jwks=await (await fetch(`${ssoIssuer()}/jwks`,{signal:AbortSignal.timeout(10000)})).json();
+  const jwk=(jwks.keys||[]).find(key=>key.kid===decoded.kid);
+  if(!jwk)return {error:'No matching signing key was found at the campus SSO provider.'};
+  let signatureOk=false;
+  try{signatureOk=crypto.verify('sha256',Buffer.from(`${header}.${payload}`),crypto.createPublicKey({key:jwk,format:'jwk'}),Buffer.from(signature,'base64url'));}catch{signatureOk=false;}
+  if(!signatureOk)return {error:'The identity token signature is invalid.'};
+  if(claims.iss!==ssoIssuer())return {error:'The identity token was issued by an unexpected provider.'};
+  if(claims.aud!==ssoClientId())return {error:'The identity token was issued for a different application.'};
+  if(!claims.exp||claims.exp*1000<Date.now())return {error:'The sign-in response has expired. Try again.'};
+  return {claims};
+}
+router.post('/sso', async (req,res) => {
+  const code=String(req.body?.code||''), codeVerifier=String(req.body?.code_verifier||'');
+  if(!code)return res.status(400).json({message:'The sign-in response did not include an authorization code.'});
+  if(!ssoIssuer())return res.status(503).json({message:'The campus SSO provider is not configured on this server.'});
+  try {
+    const body=new URLSearchParams({grant_type:'authorization_code',code,redirect_uri:ssoRedirectUri(),client_id:ssoClientId(),client_secret:process.env.MESSAGING_CLIENT_SECRET||''});
+    if(codeVerifier)body.set('code_verifier',codeVerifier);
+    const tokenResponse=await fetch(`${ssoIssuer()}/oauth/token`,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body,signal:AbortSignal.timeout(10000)});
+    const tokens=await tokenResponse.json().catch(()=>({}));
+    if(!tokenResponse.ok||!tokens.id_token)return res.status(401).json({message:tokens.error_description||tokens.error||'The campus SSO provider rejected the sign-in.'});
+    const verified=await verifyIdToken(tokens.id_token);
+    if(verified.error)return res.status(401).json({message:verified.error});
+    const claims=verified.claims, email=String(claims.email||'').trim().toLowerCase();
+    if(!email)return res.status(401).json({message:'The campus SSO provider did not return an email address for this account.'});
+    let user=await User.findOne({email});
+    if(!user){
+      // First sign-in for this campus identity: provision the same unassigned Student account self-registration creates.
+      // Organizational scope is still assigned by an authorized official.
+      user=await User.create({name:String(claims.name||email).trim().slice(0,120),email,passwordHash:await bcrypt.hash(crypto.randomBytes(24).toString('hex'),12),role:'Student',campus:'',department:'',assignments:[]});
+    }
+    if(user.status!=='active')return res.status(403).json({message:'This account is not active. Contact an authorized university official.'});
+    await syncDefaultMemberships(user);
+    const token=jwt.sign({sub:String(user._id),sv:user.securityVersion},process.env.JWT_SECRET,{expiresIn:'12h',algorithm:'HS256'});
+    res.json({token,user:safeUser(user)});
+  } catch(e) {
+    console.error('SSO sign-in failed:',e.message);
+    res.status(502).json({message:'The campus SSO provider could not be reached. Try again or sign in with your password.'});
+  }
+});
 export default router;

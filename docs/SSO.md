@@ -2,12 +2,14 @@
 
 This repository contains two products that share one Express server and one React client:
 
-1. **CUI_Communicate** — the university messaging workspace (Direct Messages + group broadcasting). Unchanged.
+1. **CUI_Communicate** — the university messaging workspace (Direct Messages + group broadcasting). Its login page now
+   offers Google, Facebook and the campus account as well.
 2. **The SSO platform** (`server/src/sso/`) — a multi-tenant OAuth 2.0 / OpenID Connect provider with MFA,
    token management, social sign-in and an administration dashboard, plus two sample client applications.
 
 The SSO platform keeps its own collections (`sso_*`), its own users and its own RS256 signing keys, so adding it
-cannot change the messaging authorization model. The messaging app keeps using its own JWT login.
+cannot change the messaging authorization model: the workspace still issues its own JWT session, and it obtains one
+through the provider as an ordinary OpenID Connect client (the provider never reads the messaging models).
 
 ## Sample client applications
 
@@ -15,6 +17,7 @@ cannot change the messaging authorization model. The messaging app keeps using i
 |---|---|---|
 | Campus Portal | `https://9101-$BASE44_PUBLIC_HOST_SUFFIX` | `campus-portal` |
 | Library Desk | `https://9102-$BASE44_PUBLIC_HOST_SUFFIX` | `library-desk` |
+| CUI_Communicate workspace | `https://3000-$BASE44_PUBLIC_HOST_SUFFIX` | `cui-communicate` |
 
 Both are dependency-free Node apps in `demo-clients/`. They redirect to the provider, exchange the code **server side**
 (client secret + PKCE verifier), verify the `id_token` RS256 signature against `/jwks`, keep their own session cookie
@@ -22,6 +25,20 @@ and expose a protected API (`GET /api/me`, `GET /api/courses`, `GET /api/loans`)
 
 Open one, sign in, then open the other: the provider session is reused, so no credentials are requested again — that is
 the single sign-on demonstration required by the assignment.
+
+## Workspace sign-in through the provider
+
+The messaging workspace is registered as a third client (`cui-communicate`, redirect URI `<web origin>/sso/callback`).
+Its login page shows **Continue with Google** and **Continue with Facebook**: each button sends the browser to the
+provider for that social provider, which verifies the identity and then returns an authorization code to the workspace.
+`POST /api/auth/sso` exchanges the code server-side (client secret + PKCE), verifies the RS256 `id_token` against
+`/jwks` (issuer, audience, expiry) and issues the workspace's own JWT session — the same session the password form
+returns. A campus identity that has no workspace account yet gets the same unassigned **Student** account
+self-registration creates, so an authorized official still assigns campus and department access afterwards.
+
+The browser must be able to reach both origins, and the workspace redirect URI is derived from `MESSAGING_URL`
+(compose passes the web origin). Both endpoints are also reachable manually: the provider's own `/login` page shows the
+same Google/Facebook buttons for every registered application.
 
 ## Endpoints
 
@@ -98,7 +115,7 @@ Passwords are only set when an account is first created, so a seed run never res
 | C. MFA toggles, TOTP, enrolment, verification, recovery codes, recovery procedure | tenant `settings.mfa`, `/mfa*`, `security.js` (TOTP, recovery codes), admin `reset-mfa` |
 | D. Hashing, no plaintext, strength rules, failed-attempt protection, reset/change password | bcrypt cost 12, `passwordProblems`, lockout counters, `/forgot`, `/reset`, `/account/password` |
 | E. Short-lived access tokens, refresh + rotation + revocation, claim validation, logout, HTTPS-ready | `tokens.js`, `POST /oauth/token`, `/oauth/revoke`, `/logout`, `Secure` cookies |
-| F. Google and Facebook login, tenant toggles, secure linking, failure/callback handling | `/sso/oauth/:provider/*`, tenant provider settings, linking rules (credentials are placeholders) |
+| F. Google and Facebook login, tenant toggles, secure linking, failure/callback handling | `/sso/oauth/:provider/*`, tenant provider settings, linking rules; the workspace login page uses the same flow through `POST /api/auth/sso` |
 | G. Two sample client applications, cross-app session, protected routes/APIs, new app registration | `demo-clients/campus-portal`, `demo-clients/library-desk`, `/admin/tenant/apps` |
 | Administrative dashboard | `/admin` (overview, tenants, tenant settings, users, applications, audit trail, failed sign-ins) |
 | Non-functional: security, isolation, scalability, maintainability, usability, reliability | scoped queries, schema-clamped lifetimes, modular `server/src/sso/*`, responsive pages, explicit error pages |
